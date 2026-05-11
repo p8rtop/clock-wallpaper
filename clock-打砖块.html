@@ -167,6 +167,16 @@
         let autoMode = true;
         let pendingReset = false;
         
+        // ---------- 键盘控制状态 ----------
+        let keyboardControl = {
+            left: false,
+            right: false,
+            up: false,
+            down: false
+        };
+        let lastKeyboardTime = 0;
+        const KEYBOARD_TIMEOUT = 2000; // 2秒无操作后切换回自动模式
+        
         // ---------- 随机加速辅助函数 ----------
         function applyRandomBoost() {
             if (Math.random() > CONFIG.RANDOM_BOOST_CHANCE) return;
@@ -327,6 +337,43 @@
             if (mouseTrail.length > CONFIG.TRAIL_LENGTH) mouseTrail.pop();
         });
         canvas.addEventListener('touchstart', (e) => e.preventDefault());
+        
+        // ---------- 键盘事件监听 ----------
+        document.addEventListener('keydown', (e) => {
+            switch(e.key) {
+                case 'ArrowLeft':
+                    keyboardControl.left = true;
+                    break;
+                case 'ArrowRight':
+                    keyboardControl.right = true;
+                    break;
+                case 'ArrowUp':
+                    keyboardControl.up = true;
+                    break;
+                case 'ArrowDown':
+                    keyboardControl.down = true;
+                    break;
+            }
+            lastKeyboardTime = Date.now();
+            autoMode = false;
+        });
+        
+        document.addEventListener('keyup', (e) => {
+            switch(e.key) {
+                case 'ArrowLeft':
+                    keyboardControl.left = false;
+                    break;
+                case 'ArrowRight':
+                    keyboardControl.right = false;
+                    break;
+                case 'ArrowUp':
+                    keyboardControl.up = false;
+                    break;
+                case 'ArrowDown':
+                    keyboardControl.down = false;
+                    break;
+            }
+        });
         
         function updateTrailAges() {
             for (let i = 0; i < mouseTrail.length; i++) mouseTrail[i].age += 0.2;
@@ -749,11 +796,31 @@
             // 时钟碰撞（选择反弹 + 颤动动画）
             handleClockCollisionSelective();
             
-            // AI 控制挡板
+            // 控制挡板：优先键盘控制，超时后切换回自动模式
+            const timeSinceLastKey = Date.now() - lastKeyboardTime;
+            if (lastKeyboardTime === 0 || timeSinceLastKey > KEYBOARD_TIMEOUT) {
+                // 超过2秒无键盘操作，切换回自动模式
+                if (!autoMode) {
+                    autoMode = true;
+                }
+            }
+            
             if (autoMode) {
+                // AI 控制挡板
                 let targetX = ball.x - CONFIG.PADDLE_WIDTH / 2;
                 targetX = Math.min(canvasWidth - CONFIG.PADDLE_WIDTH, Math.max(0, targetX));
                 paddleX += (targetX - paddleX) * CONFIG.AI_FOLLOW_FORCE;
+                paddleX = Math.min(canvasWidth - CONFIG.PADDLE_WIDTH, Math.max(0, paddleX));
+            } else {
+                // 键盘控制挡板
+                const paddleSpeed = 6;
+                if (keyboardControl.left) {
+                    paddleX -= paddleSpeed;
+                }
+                if (keyboardControl.right) {
+                    paddleX += paddleSpeed;
+                }
+                // 限制挡板在屏幕范围内
                 paddleX = Math.min(canvasWidth - CONFIG.PADDLE_WIDTH, Math.max(0, paddleX));
             }
             
