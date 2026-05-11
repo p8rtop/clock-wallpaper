@@ -60,6 +60,8 @@
             padding: 0.2em 0.5em;
             border-radius: 24px;
             backdrop-filter: blur(2px);
+            cursor: pointer;
+            pointer-events: auto;
         }
         .date {
             font-size: 32px;
@@ -930,6 +932,11 @@
     }
     setInterval(updateClock, 1000);
     updateClock();
+    
+    // 双击时间返回主页
+    document.querySelector('.time').addEventListener('dblclick', function() {
+        window.location.href = 'index.html';
+    });
 </script>
 </body>
 </html>

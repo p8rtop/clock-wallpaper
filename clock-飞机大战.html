@@ -57,6 +57,8 @@
             backdrop-filter: none;
             border: none;
             box-shadow: none;
+            cursor: pointer;
+            pointer-events: auto;
         }
         .date {
             font-size: 32px;
@@ -1242,6 +1244,11 @@
     }
     setInterval(updateClock, 1000);
     updateClock();
+    
+    // 双击时间返回主页
+    document.querySelector('.time').addEventListener('dblclick', function() {
+        window.location.href = 'index.html';
+    });
 </script>
 </body>
 </html>
