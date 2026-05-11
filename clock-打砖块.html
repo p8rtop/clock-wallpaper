@@ -1,0 +1,868 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>打砖块</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        body {
+            background: #000000;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+            height: 100vh;
+            width: 100vw;
+            position: fixed;
+        }
+
+        canvas {
+            display: block;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            cursor: none;
+            z-index: 1;
+        }
+
+        /* 时钟样式 */
+        .clock {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: #d0d0d0;
+            pointer-events: none;
+            z-index: 999;
+            font-family: Arial, sans-serif;
+            text-shadow: 0 0 8px rgba(0,0,0,0.5);
+            transition: transform 0.05s ease-out;
+        }
+        .time {
+            font-size: 100px;
+            font-weight: bold;
+            margin-bottom: 20px;
+            letter-spacing: 4px;
+            background: rgba(0,0,0,0.4);
+            padding: 0.2em 0.5em;
+            border-radius: 24px;
+            backdrop-filter: blur(2px);
+        }
+        .date {
+            font-size: 32px;
+            color: #909090;
+            background: rgba(0,0,0,0.3);
+            padding: 0.2em 1em;
+            border-radius: 40px;
+            backdrop-filter: blur(2px);
+        }
+
+        /* 时钟颤动动画 */
+        @keyframes clockShake {
+            0% { transform: translate(0px, 0px) rotate(0deg); }
+            20% { transform: translate(-4px, 2px) rotate(-1deg); }
+            40% { transform: translate(4px, -1px) rotate(1deg); }
+            60% { transform: translate(-2px, 1px) rotate(0.5deg); }
+            80% { transform: translate(2px, -1px) rotate(-0.5deg); }
+            100% { transform: translate(0px, 0px) rotate(0deg); }
+        }
+        .shake-clock {
+            animation: clockShake 0.12s ease-in-out 2;
+        }
+
+        @media (max-width: 768px) and (orientation: portrait) {
+            .time { font-size: 14vw; }
+            .date { font-size: 5vw; }
+        }
+        @media (max-width: 1024px) and (orientation: landscape) {
+            .time { font-size: 10vh; }
+            .date { font-size: 3.5vh; }
+        }
+
+        html {
+            overflow: hidden;
+            background: #000;
+        }
+    </style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+<div class="clock">
+    <div class="time">00:00:00</div>
+    <div class="date">2025-01-01 星期一</div>
+</div>
+
+<script>
+    (function() {
+        // ---------- DOM ----------
+        const canvas = document.getElementById('gameCanvas');
+        let ctx = canvas.getContext('2d');
+        const clockContainer = document.querySelector('.clock');
+        const timeDiv = document.querySelector('.time');
+        const dateDiv = document.querySelector('.date');
+
+        // ---------- 全局配置 ----------
+        const CONFIG = {
+            PADDLE_WIDTH: 140,
+            PADDLE_HEIGHT: 12,
+            PADDLE_Y_OFFSET: 28,
+            BALL_RADIUS: 6,
+            BALL_SPEED_X: 2.4,
+            BALL_SPEED_Y: -3.2,
+            BRICK_MIN_W: 27,
+            BRICK_MAX_W: 55,
+            BRICK_GAP: 1.2,
+            BALL_MAX_SPEED: 7.5,
+            AI_FOLLOW_FORCE: 0.12,
+            STAR_COUNT: 130,
+            TRAIL_LENGTH: 12,
+            COLLISION_PARTICLES: 12,
+            // 砖块顶部起始偏移
+            BRICK_TOP_OFFSET: 2,
+            // 砖块底部距离时钟区域顶部的间距 (px)
+            BRICK_TO_CLOCK_GAP: 100,
+            // 砖块高度范围
+            BRICK_HEIGHT_MIN: 12,
+            BRICK_HEIGHT_MAX: 26,
+            // 随机加速概率 (每次砖块/挡板碰撞时)
+            RANDOM_BOOST_CHANCE: 0.28,
+            // 加速幅度范围 (1.0~1.12)
+            BOOST_FACTOR_MIN: 1.02,
+            BOOST_FACTOR_MAX: 1.12,
+        };
+
+        // 砖块固定柔和色板
+        const brickColors = [
+            '#6b7096', '#79948a', '#9a7a7a', '#7a8a9a', '#8a7a9a',
+            '#6a8a7a', '#8a8a6a', '#7a6a8a', '#8a7a6a', '#6a7a8a'
+        ];
+
+        let gameRunning = true;
+        let animationId = null;
+        let canvasWidth = window.innerWidth;
+        let canvasHeight = window.innerHeight;
+        
+        let bricks = [];
+        let brickCols = 0;
+        let brickRows = 0;
+        let brickWidth = 0;
+        let brickHeight = 0;
+        let brickStartY = 0;
+        
+        let paddleX = 0;
+        let ball = { x: 0, y: 0, dx: CONFIG.BALL_SPEED_X, dy: CONFIG.BALL_SPEED_Y };
+        let autoMode = true;
+        let pendingReset = false;
+        
+        // ---------- 随机加速辅助函数 ----------
+        function applyRandomBoost() {
+            if (Math.random() > CONFIG.RANDOM_BOOST_CHANCE) return;
+            // 随机因子 1.02 ~ 1.12
+            const factor = CONFIG.BOOST_FACTOR_MIN + Math.random() * (CONFIG.BOOST_FACTOR_MAX - CONFIG.BOOST_FACTOR_MIN);
+            let newDx = ball.dx * factor;
+            let newDy = ball.dy * factor;
+            // 限制最大速度
+            const maxSpeed = CONFIG.BALL_MAX_SPEED;
+            if (Math.abs(newDx) > maxSpeed) newDx = newDx > 0 ? maxSpeed : -maxSpeed;
+            if (Math.abs(newDy) > maxSpeed) newDy = newDy > 0 ? maxSpeed : -maxSpeed;
+            // 避免速度过小
+            if (Math.abs(newDx) < 1.2) newDx = newDx > 0 ? 1.2 : -1.2;
+            if (Math.abs(newDy) < 1.5) newDy = newDy > 0 ? 1.5 : -1.5;
+            ball.dx = newDx;
+            ball.dy = newDy;
+        }
+        
+        // ---------- 挡板小猫推球动画 ----------
+        let paddleHitAnim = false;
+        let paddleAnimFrames = 0;
+        const ANIM_DURATION = 8;
+        
+        // ---------- 碰撞特效粒子系统 ----------
+        let collisionParticles = [];
+        
+        class CollisionParticle {
+            constructor(x, y, vx, vy, color, size, life) {
+                this.x = x; this.y = y; this.vx = vx; this.vy = vy;
+                this.color = color; this.size = size; this.life = life; this.maxLife = life;
+            }
+            update() {
+                this.x += this.vx; this.y += this.vy; this.vy += 0.15; this.life -= 1;
+            }
+            draw(ctx) {
+                let alpha = Math.min(1, this.life / this.maxLife * 0.9);
+                ctx.fillStyle = this.color;
+                ctx.globalAlpha = alpha;
+                ctx.fillRect(this.x - this.size/2, this.y - this.size/2, this.size, this.size);
+            }
+        }
+        
+        function addCollisionEffect(px, py, baseColor = '#ffd966') {
+            const count = CONFIG.COLLISION_PARTICLES;
+            for (let i = 0; i < count; i++) {
+                let angle = Math.random() * Math.PI * 2;
+                let speed = 1.2 + Math.random() * 3;
+                let vx = Math.cos(angle) * speed;
+                let vy = Math.sin(angle) * speed;
+                let size = 2 + Math.random() * 3;
+                let life = 12 + Math.random() * 8;
+                let color = baseColor;
+                if (Math.random() > 0.6) color = '#ffaa88';
+                if (Math.random() > 0.8) color = '#ffffff';
+                collisionParticles.push(new CollisionParticle(px, py, vx, vy, color, size, life));
+            }
+        }
+        
+        function updateCollisionParticles() {
+            for (let i = collisionParticles.length-1; i >= 0; i--) {
+                collisionParticles[i].update();
+                if (collisionParticles[i].life <= 0) collisionParticles.splice(i,1);
+            }
+        }
+        
+        function drawCollisionParticles() {
+            ctx.save();
+            for (let p of collisionParticles) p.draw(ctx);
+            ctx.restore();
+        }
+        
+        // ---------- 星空粒子系统 ----------
+        let stars = [];
+        
+        class Star {
+            constructor() {
+                this.x = Math.random() * canvasWidth;
+                this.y = Math.random() * canvasHeight;
+                this.size = 0.8 + Math.random() * 2.2;
+                this.alpha = 0.3 + Math.random() * 0.6;
+                this.speedX = (Math.random() - 0.5) * 0.08;
+                this.speedY = (Math.random() - 0.5) * 0.05 - 0.02;
+                this.twinkleSpeed = 0.5 + Math.random() * 2;
+                this.phase = Math.random() * Math.PI * 2;
+            }
+            update() {
+                this.x += this.speedX;
+                this.y += this.speedY;
+                if (this.x < -10) this.x = canvasWidth + 5;
+                if (this.x > canvasWidth + 10) this.x = -5;
+                if (this.y < -10) this.y = canvasHeight + 5;
+                if (this.y > canvasHeight + 10) this.y = -10;
+                this.alpha = 0.3 + 0.45 * (0.8 + 0.4 * Math.sin(Date.now() * 0.002 * this.twinkleSpeed + this.phase));
+            }
+            draw(ctx) {
+                ctx.save();
+                ctx.globalAlpha = Math.min(0.85, Math.max(0.2, this.alpha));
+                ctx.fillStyle = `rgba(210, 220, 240, ${ctx.globalAlpha})`;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fill();
+                if (this.size > 1.5 && this.alpha > 0.5) {
+                    ctx.globalAlpha = 0.2;
+                    ctx.fillStyle = '#aaccff';
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, this.size * 1.8, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+                ctx.restore();
+            }
+        }
+        
+        function initStars() {
+            stars = [];
+            for (let i = 0; i < CONFIG.STAR_COUNT; i++) stars.push(new Star());
+        }
+        
+        function updateStars() {
+            for (let s of stars) s.update();
+        }
+        
+        function drawStars() {
+            for (let s of stars) s.draw(ctx);
+        }
+        
+        // ---------- 彩虹像素拖尾 ----------
+        let mouseTrail = [];
+        let currentMouseX = canvasWidth/2;
+        let currentMouseY = canvasHeight/2;
+        
+        canvas.addEventListener('mousemove', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            let mouseX = (e.clientX - rect.left) * scaleX;
+            let mouseY = (e.clientY - rect.top) * scaleY;
+            mouseX = Math.min(canvasWidth, Math.max(0, mouseX));
+            mouseY = Math.min(canvasHeight, Math.max(0, mouseY));
+            currentMouseX = mouseX;
+            currentMouseY = mouseY;
+            mouseTrail.unshift({ x: mouseX, y: mouseY, age: 0 });
+            if (mouseTrail.length > CONFIG.TRAIL_LENGTH) mouseTrail.pop();
+        });
+        
+        canvas.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            const rect = canvas.getBoundingClientRect();
+            const touch = e.touches[0];
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            let touchX = (touch.clientX - rect.left) * scaleX;
+            let touchY = (touch.clientY - rect.top) * scaleY;
+            touchX = Math.min(canvasWidth, Math.max(0, touchX));
+            touchY = Math.min(canvasHeight, Math.max(0, touchY));
+            currentMouseX = touchX;
+            currentMouseY = touchY;
+            mouseTrail.unshift({ x: touchX, y: touchY, age: 0 });
+            if (mouseTrail.length > CONFIG.TRAIL_LENGTH) mouseTrail.pop();
+        });
+        canvas.addEventListener('touchstart', (e) => e.preventDefault());
+        
+        function updateTrailAges() {
+            for (let i = 0; i < mouseTrail.length; i++) mouseTrail[i].age += 0.2;
+            mouseTrail = mouseTrail.filter(t => t.age < 2.5);
+        }
+        
+        function drawRainbowTrail() {
+            if (mouseTrail.length === 0) return;
+            for (let i = 0; i < mouseTrail.length; i++) {
+                const point = mouseTrail[i];
+                const ageFactor = Math.max(0, 1 - point.age / 2.5);
+                if (ageFactor <= 0) continue;
+                const hue = (Date.now() * 0.008 + i * 18) % 360;
+                ctx.fillStyle = `hsl(${hue}, 70%, 65%)`;
+                const size = 5 + 2 * ageFactor;
+                ctx.fillRect(point.x - size/2, point.y - size/2, size, size);
+                ctx.fillStyle = `hsl(${hue}, 80%, 72%)`;
+                ctx.fillRect(point.x - size/3, point.y - size/3, size/2, size/2);
+            }
+            ctx.shadowBlur = 0;
+        }
+        
+        // ---------- 像素小猫光标 ----------
+        function drawPixelCat(x, y) {
+            const catX = x - 10;
+            const catY = y - 12;
+            ctx.save();
+            ctx.imageSmoothingEnabled = false;
+            ctx.fillStyle = '#a8a9ad';
+            ctx.fillRect(catX + 2, catY + 4, 12, 10);
+            ctx.fillStyle = '#8f9198';
+            ctx.fillRect(catX + 4, catY + 2, 2, 3);
+            ctx.fillRect(catX + 10, catY + 2, 2, 3);
+            ctx.fillStyle = '#a0a2aa';
+            ctx.fillRect(catX, catY + 2, 3, 5);
+            ctx.fillRect(catX + 13, catY + 2, 3, 5);
+            ctx.fillStyle = '#c7c9ce';
+            ctx.fillRect(catX + 1, catY + 1, 2, 3);
+            ctx.fillRect(catX + 13, catY + 1, 2, 3);
+            ctx.fillStyle = '#eaeef2';
+            ctx.fillRect(catX + 5, catY + 6, 2, 2);
+            ctx.fillRect(catX + 9, catY + 6, 2, 2);
+            ctx.fillStyle = '#1a1c1e';
+            ctx.fillRect(catX + 5, catY + 6, 1, 2);
+            ctx.fillRect(catX + 9, catY + 6, 1, 2);
+            ctx.fillStyle = '#e68a8a';
+            ctx.fillRect(catX + 7, catY + 8, 2, 2);
+            ctx.fillStyle = '#b0b3b8';
+            ctx.fillRect(catX + 3, catY + 8, 2, 1);
+            ctx.fillRect(catX + 11, catY + 8, 2, 1);
+            ctx.fillRect(catX + 1, catY + 9, 2, 1);
+            ctx.fillRect(catX + 13, catY + 9, 2, 1);
+            ctx.fillStyle = '#d0d2d6';
+            ctx.fillRect(catX + 2, catY + 10, 2, 1);
+            ctx.fillRect(catX + 12, catY + 10, 2, 1);
+            ctx.restore();
+        }
+        
+        // ---------- 获取时钟区域在Canvas中的矩形 ----------
+        function getClockRectInCanvas() {
+            if (!timeDiv || !dateDiv) return null;
+            const timeRect = timeDiv.getBoundingClientRect();
+            const dateRect = dateDiv.getBoundingClientRect();
+            const canvasRect = canvas.getBoundingClientRect();
+            if (canvasRect.width === 0) return null;
+            const scaleX = canvas.width / canvasRect.width;
+            const scaleY = canvas.height / canvasRect.height;
+            const left = Math.min(timeRect.left, dateRect.left);
+            const right = Math.max(timeRect.right, dateRect.right);
+            const top = Math.min(timeRect.top, dateRect.top);
+            const bottom = Math.max(timeRect.bottom, dateRect.bottom);
+            return {
+                x: (left - canvasRect.left) * scaleX,
+                y: (top - canvasRect.top) * scaleY,
+                w: (right - left) * scaleX,
+                h: (bottom - top) * scaleY,
+                topY: (top - canvasRect.top) * scaleY,
+                bottomY: (bottom - canvasRect.top) * scaleY
+            };
+        }
+        
+        // ---------- 时钟颤动动画 ----------
+        function triggerClockShake() {
+            if (!clockContainer) return;
+            clockContainer.classList.add('shake-clock');
+            setTimeout(() => {
+                clockContainer.classList.remove('shake-clock');
+            }, 240);
+        }
+        
+        // ---------- 动态计算砖块布局（砖块位于屏幕顶部，与时钟顶部保持间距）----------
+        function recomputeBrickGeometry() {
+            let clockTopY = canvasHeight * 0.4;
+            const clockRect = getClockRectInCanvas();
+            if (clockRect && clockRect.topY > 0) {
+                clockTopY = clockRect.topY;
+            }
+            const maxBottom = clockTopY - CONFIG.BRICK_TO_CLOCK_GAP;
+            if (maxBottom <= CONFIG.BRICK_TOP_OFFSET + 10) {
+                brickRows = 1;
+                brickHeight = CONFIG.BRICK_HEIGHT_MIN;
+                brickStartY = CONFIG.BRICK_TOP_OFFSET;
+                return;
+            }
+            
+            brickStartY = CONFIG.BRICK_TOP_OFFSET;
+            const availableHeight = maxBottom - brickStartY;
+            if (availableHeight <= 0) {
+                brickRows = 1;
+                brickHeight = CONFIG.BRICK_HEIGHT_MIN;
+                return;
+            }
+            
+            let bestRows = 1;
+            let bestHeight = CONFIG.BRICK_HEIGHT_MAX;
+            const gap = CONFIG.BRICK_GAP;
+            for (let h = CONFIG.BRICK_HEIGHT_MAX; h >= CONFIG.BRICK_HEIGHT_MIN; h -= 2) {
+                const possibleRows = Math.floor((availableHeight + gap) / (h + gap));
+                if (possibleRows >= 1) {
+                    bestRows = possibleRows;
+                    bestHeight = h;
+                    break;
+                }
+            }
+            let totalHeight = bestRows * bestHeight + (bestRows - 1) * gap;
+            if (totalHeight > availableHeight + 2 && bestRows > 1) {
+                bestRows--;
+                totalHeight = bestRows * bestHeight + (bestRows - 1) * gap;
+            }
+            brickRows = bestRows;
+            brickHeight = bestHeight;
+            
+            let bestCols = 1;
+            let bestWidth = 0;
+            for (let cols = 6; cols <= 42; cols++) {
+                const totalGap = CONFIG.BRICK_GAP * (cols + 1);
+                const availWidth = canvasWidth - totalGap;
+                const w = availWidth / cols;
+                if (w >= CONFIG.BRICK_MIN_W && w <= CONFIG.BRICK_MAX_W) {
+                    bestCols = cols;
+                    bestWidth = w;
+                    break;
+                } else if (w > CONFIG.BRICK_MAX_W && cols < 42) {
+                    continue;
+                } else if (w < CONFIG.BRICK_MIN_W && cols > 6) {
+                    const prevCols = cols - 1;
+                    const prevGap = CONFIG.BRICK_GAP * (prevCols + 1);
+                    const prevAvail = canvasWidth - prevGap;
+                    bestWidth = prevAvail / prevCols;
+                    bestCols = prevCols;
+                    break;
+                } else if (cols === 42) {
+                    bestCols = cols;
+                    const gapTotal = CONFIG.BRICK_GAP * (cols + 1);
+                    bestWidth = (canvasWidth - gapTotal) / cols;
+                    if (bestWidth < 18) bestWidth = 22;
+                    break;
+                }
+            }
+            if (bestCols === 1) {
+                bestCols = Math.floor(canvasWidth / 40);
+                if (bestCols < 4) bestCols = 4;
+                const gap = CONFIG.BRICK_GAP * (bestCols + 1);
+                bestWidth = (canvasWidth - gap) / bestCols;
+            }
+            brickCols = bestCols;
+            brickWidth = bestWidth;
+        }
+        
+        function generateBricks() {
+            recomputeBrickGeometry();
+            const newBricks = [];
+            const startX = CONFIG.BRICK_GAP;
+            for (let row = 0; row < brickRows; row++) {
+                newBricks[row] = [];
+                for (let col = 0; col < brickCols; col++) {
+                    const brickX = startX + col * (brickWidth + CONFIG.BRICK_GAP);
+                    const brickY = brickStartY + row * (brickHeight + CONFIG.BRICK_GAP);
+                    const randomIndex = Math.floor(Math.random() * brickColors.length);
+                    const color = brickColors[randomIndex];
+                    newBricks[row][col] = {
+                        x: brickX, y: brickY, w: brickWidth, h: brickHeight,
+                        active: true, color: color,
+                    };
+                }
+            }
+            return newBricks;
+        }
+        
+        function resetGame() {
+            if (pendingReset) return;
+            pendingReset = true;
+            bricks = generateBricks();
+            paddleX = (canvasWidth - CONFIG.PADDLE_WIDTH) / 2;
+            const paddleTopY = canvasHeight - CONFIG.PADDLE_Y_OFFSET - CONFIG.PADDLE_HEIGHT;
+            ball.x = paddleX + CONFIG.PADDLE_WIDTH / 2;
+            ball.y = paddleTopY - CONFIG.BALL_RADIUS - 2;
+            let dirX = (Math.random() > 0.5 ? 1 : -1) * (1.8 + Math.random() * 1.2);
+            let dirY = -2.6 - Math.random() * 1.2;
+            ball.dx = Math.min(CONFIG.BALL_MAX_SPEED, Math.max(-CONFIG.BALL_MAX_SPEED, dirX));
+            ball.dy = Math.min(-1.2, dirY);
+            if (Math.abs(ball.dx) < 1.2) ball.dx = ball.dx > 0 ? 1.6 : -1.6;
+            pendingReset = false;
+            paddleHitAnim = false;
+            paddleAnimFrames = 0;
+        }
+        
+        // ---------- 绘制像素小猫挡板 ----------
+        function drawPixelCatPaddle(x, y, width, height, isAnim, ballX) {
+            const animOffset = isAnim ? 3 : 0;
+            const bodyColor = '#8f8d9c';
+            const bellyColor = '#adabc0';
+            const earColor = '#a6a2b5';
+            const eyeColor = '#f5f5fa';
+            const pupilColor = '#2c2e3a';
+            const noseColor = '#e08a7a';
+            
+            ctx.fillStyle = bodyColor;
+            ctx.fillRect(x, y, width, height);
+            ctx.fillStyle = bellyColor;
+            ctx.fillRect(x + 8, y + 3, width - 16, height - 4);
+            
+            ctx.fillStyle = earColor;
+            ctx.fillRect(x + 5, y - 4, 6, 5);
+            ctx.fillRect(x + width - 11, y - 4, 6, 5);
+            ctx.fillStyle = '#c6c2d4';
+            ctx.fillRect(x + 6, y - 3, 4, 4);
+            ctx.fillRect(x + width - 10, y - 3, 4, 4);
+            
+            const eyeOffsetX = (ballX - (x + width/2)) * 0.1;
+            const leftEyeX = x + width * 0.35 + Math.min(3, Math.max(-2, eyeOffsetX));
+            const rightEyeX = x + width * 0.65 + Math.min(3, Math.max(-2, eyeOffsetX));
+            const eyeY = y + height * 0.45;
+            ctx.fillStyle = eyeColor;
+            ctx.fillRect(leftEyeX - 2, eyeY - 2, 5, 5);
+            ctx.fillRect(rightEyeX - 2, eyeY - 2, 5, 5);
+            ctx.fillStyle = pupilColor;
+            ctx.fillRect(leftEyeX - 1, eyeY - 1, 3, 3);
+            ctx.fillRect(rightEyeX - 1, eyeY - 1, 3, 3);
+            
+            ctx.fillStyle = noseColor;
+            ctx.fillRect(x + width/2 - 2, y + height * 0.6, 4, 3);
+            ctx.fillStyle = '#e8e8f0';
+            for (let i = -1; i <= 1; i++) {
+                ctx.fillRect(x + width/2 - 7 + i*2, y + height * 0.65, 2, 1);
+                ctx.fillRect(x + width/2 + 4 + i*2, y + height * 0.65, 2, 1);
+            }
+            
+            if (isAnim) {
+                ctx.fillStyle = '#bcb7cf';
+                ctx.fillRect(x + 8, y + height - 2, 5, animOffset);
+                ctx.fillRect(x + width - 13, y + height - 2, 5, animOffset);
+                ctx.fillStyle = '#e0cfe0';
+                ctx.fillRect(x + 12, y + height - 1, 3, 2);
+                ctx.fillRect(x + width - 15, y + height - 1, 3, 2);
+            } else {
+                ctx.fillStyle = '#b0abbe';
+                ctx.fillRect(x + 8, y + height - 2, 4, 2);
+                ctx.fillRect(x + width - 12, y + height - 2, 4, 2);
+            }
+            
+            ctx.fillStyle = '#6f6c7c';
+            ctx.fillRect(x + width/2 - 6, y - 1, 12, 2);
+        }
+        
+        function updatePaddleAnim() {
+            if (paddleHitAnim) {
+                paddleAnimFrames--;
+                if (paddleAnimFrames <= 0) paddleHitAnim = false;
+            }
+        }
+        
+        function triggerPaddleHit() {
+            paddleHitAnim = true;
+            paddleAnimFrames = ANIM_DURATION;
+        }
+        
+        // ---------- 时钟碰撞检测（只有从上往下击中才反弹 + 颤动动画）----------
+        function handleClockCollisionSelective() {
+            const clockRect = getClockRectInCanvas();
+            if (!clockRect) return false;
+            
+            const closestX = Math.max(clockRect.x, Math.min(ball.x, clockRect.x + clockRect.w));
+            const closestY = Math.max(clockRect.y, Math.min(ball.y, clockRect.y + clockRect.h));
+            const dx = ball.x - closestX;
+            const dy = ball.y - closestY;
+            const dist = Math.sqrt(dx*dx + dy*dy);
+            
+            if (dist < CONFIG.BALL_RADIUS) {
+                // 只有小球速度向下（dy > 0）才视为从顶部落下撞击
+                if (ball.dy > 0) {
+                    // 触发颤动动画
+                    triggerClockShake();
+                    addCollisionEffect(ball.x, ball.y, '#ffcc88');
+                    // 反弹物理
+                    if (dist === 0) {
+                        ball.dx = -ball.dx;
+                        ball.dy = -ball.dy;
+                        ball.x += (ball.x - clockRect.x - clockRect.w/2) * 0.5;
+                        ball.y += (ball.y - clockRect.y - clockRect.h/2) * 0.5;
+                        return true;
+                    }
+                    const overlap = CONFIG.BALL_RADIUS - dist;
+                    const nx = dx / dist;
+                    const ny = dy / dist;
+                    ball.x += nx * overlap;
+                    ball.y += ny * overlap;
+                    let dot = ball.dx * nx + ball.dy * ny;
+                    if (dot < 0) {
+                        ball.dx -= 2 * dot * nx;
+                        ball.dy -= 2 * dot * ny;
+                        const maxSp = CONFIG.BALL_MAX_SPEED;
+                        ball.dx = Math.min(maxSp, Math.max(-maxSp, ball.dx));
+                        ball.dy = Math.min(maxSp, Math.max(-maxSp, ball.dy));
+                    }
+                    return true;
+                }
+                // 从下方穿越，无任何效果
+                return false;
+            }
+            return false;
+        }
+        
+        // ---------- 物理更新 + 随机加速集成 ----------
+        function updateGame() {
+            if (!gameRunning) return;
+            
+            ball.x += ball.dx;
+            ball.y += ball.dy;
+            
+            // 边界碰撞
+            if (ball.x - CONFIG.BALL_RADIUS <= 0) {
+                ball.x = CONFIG.BALL_RADIUS;
+                ball.dx = -ball.dx;
+                addCollisionEffect(ball.x, ball.y, '#c0c0e0');
+                applyRandomBoost(); // 边界碰撞也有几率加速
+            }
+            if (ball.x + CONFIG.BALL_RADIUS >= canvasWidth) {
+                ball.x = canvasWidth - CONFIG.BALL_RADIUS;
+                ball.dx = -ball.dx;
+                addCollisionEffect(ball.x, ball.y, '#c0c0e0');
+                applyRandomBoost();
+            }
+            if (ball.y - CONFIG.BALL_RADIUS <= 0) {
+                ball.y = CONFIG.BALL_RADIUS;
+                ball.dy = -ball.dy;
+                addCollisionEffect(ball.x, ball.y, '#c0c0e0');
+                applyRandomBoost();
+            }
+            
+            // 挡板碰撞
+            const paddleTop = canvasHeight - CONFIG.PADDLE_Y_OFFSET - CONFIG.PADDLE_HEIGHT;
+            if (ball.y + CONFIG.BALL_RADIUS >= paddleTop && ball.y - CONFIG.BALL_RADIUS <= paddleTop + CONFIG.PADDLE_HEIGHT &&
+                ball.x + CONFIG.BALL_RADIUS >= paddleX && ball.x - CONFIG.BALL_RADIUS <= paddleX + CONFIG.PADDLE_WIDTH) {
+                triggerPaddleHit();
+                addCollisionEffect(ball.x, ball.y, '#f5bc70');
+                let hitPos = (ball.x - paddleX) / CONFIG.PADDLE_WIDTH;
+                let angle = (hitPos - 0.5) * 1.1;
+                let speed = Math.hypot(ball.dx, ball.dy);
+                let newDirX = Math.sin(angle) * speed;
+                let newDirY = -Math.cos(angle) * speed;
+                ball.dx = newDirX;
+                ball.dy = newDirY;
+                if (Math.abs(ball.dx) < 0.8) ball.dx = ball.dx > 0 ? 1.0 : -1.0;
+                if (Math.abs(ball.dy) < 1.5) ball.dy = -2.2;
+                ball.dy = -Math.abs(ball.dy);
+                const maxSp = CONFIG.BALL_MAX_SPEED;
+                ball.dx = Math.min(maxSp, Math.max(-maxSp, ball.dx));
+                ball.dy = Math.min(maxSp, Math.max(-maxSp, ball.dy));
+                ball.y = paddleTop - CONFIG.BALL_RADIUS;
+                // 挡板碰撞后随机加速
+                applyRandomBoost();
+            }
+            
+            // 掉落检测
+            if (ball.y + CONFIG.BALL_RADIUS >= canvasHeight) {
+                resetGame();
+                return;
+            }
+            
+            // 砖块碰撞
+            for (let row = 0; row < bricks.length; row++) {
+                for (let col = 0; col < bricks[row].length; col++) {
+                    const b = bricks[row][col];
+                    if (b && b.active) {
+                        if (ball.x + CONFIG.BALL_RADIUS > b.x && ball.x - CONFIG.BALL_RADIUS < b.x + b.w &&
+                            ball.y + CONFIG.BALL_RADIUS > b.y && ball.y - CONFIG.BALL_RADIUS < b.y + b.h) {
+                            b.active = false;
+                            addCollisionEffect(ball.x, ball.y, b.color);
+                            let overlapLeft = (ball.x + CONFIG.BALL_RADIUS) - b.x;
+                            let overlapRight = (b.x + b.w) - (ball.x - CONFIG.BALL_RADIUS);
+                            let overlapTop = (ball.y + CONFIG.BALL_RADIUS) - b.y;
+                            let overlapBottom = (b.y + b.h) - (ball.y - CONFIG.BALL_RADIUS);
+                            let minOverlap = Math.min(overlapLeft, overlapRight, overlapTop, overlapBottom);
+                            if (minOverlap === overlapLeft || minOverlap === overlapRight) ball.dx = -ball.dx;
+                            else ball.dy = -ball.dy;
+                            // 砖块碰撞后随机加速（帮助击碎剩余砖块）
+                            applyRandomBoost();
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            // 检查全清空重置
+            let allCleared = true;
+            for (let row = 0; row < bricks.length; row++) {
+                for (let col = 0; col < bricks[row].length; col++) {
+                    if (bricks[row][col].active) {
+                        allCleared = false;
+                        break;
+                    }
+                }
+            }
+            if (allCleared && bricks.length > 0) {
+                resetGame();
+                return;
+            }
+            
+            // 时钟碰撞（选择反弹 + 颤动动画）
+            handleClockCollisionSelective();
+            
+            // AI 控制挡板
+            if (autoMode) {
+                let targetX = ball.x - CONFIG.PADDLE_WIDTH / 2;
+                targetX = Math.min(canvasWidth - CONFIG.PADDLE_WIDTH, Math.max(0, targetX));
+                paddleX += (targetX - paddleX) * CONFIG.AI_FOLLOW_FORCE;
+                paddleX = Math.min(canvasWidth - CONFIG.PADDLE_WIDTH, Math.max(0, paddleX));
+            }
+            
+            updatePaddleAnim();
+        }
+        
+        // 绘图模块
+        function drawBricks() {
+            for (let row = 0; row < bricks.length; row++) {
+                for (let col = 0; col < bricks[row].length; col++) {
+                    const b = bricks[row][col];
+                    if (b && b.active) {
+                        ctx.fillStyle = b.color;
+                        ctx.fillRect(b.x, b.y, b.w, b.h);
+                        ctx.strokeStyle = 'rgba(40,40,50,0.35)';
+                        ctx.strokeRect(b.x, b.y, b.w, b.h);
+                    }
+                }
+            }
+        }
+        
+        function drawPaddle() {
+            const paddleY = canvasHeight - CONFIG.PADDLE_Y_OFFSET - CONFIG.PADDLE_HEIGHT;
+            drawPixelCatPaddle(paddleX, paddleY, CONFIG.PADDLE_WIDTH, CONFIG.PADDLE_HEIGHT, paddleHitAnim, ball.x);
+        }
+        
+        function drawBall() {
+            ctx.shadowBlur = 3;
+            ctx.fillStyle = '#bcbebf';
+            ctx.beginPath();
+            ctx.arc(ball.x, ball.y, CONFIG.BALL_RADIUS, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = '#dfdfe2';
+            ctx.beginPath();
+            ctx.arc(ball.x - 1, ball.y - 1, 2, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        
+        function draw() {
+            ctx.fillStyle = '#000000';
+            ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+            drawStars();
+            drawBricks();
+            drawPaddle();
+            drawBall();
+            drawCollisionParticles();
+            drawRainbowTrail();
+            drawPixelCat(currentMouseX, currentMouseY);
+        }
+        
+        // 自适应重置
+        function resizeAndReset() {
+            canvasWidth = window.innerWidth;
+            canvasHeight = window.innerHeight;
+            canvas.width = canvasWidth;
+            canvas.height = canvasHeight;
+            bricks = generateBricks();
+            paddleX = (canvasWidth - CONFIG.PADDLE_WIDTH) / 2;
+            const paddleTopY = canvasHeight - CONFIG.PADDLE_Y_OFFSET - CONFIG.PADDLE_HEIGHT;
+            ball.x = paddleX + CONFIG.PADDLE_WIDTH / 2;
+            ball.y = paddleTopY - CONFIG.BALL_RADIUS - 2;
+            ball.dx = CONFIG.BALL_SPEED_X * (Math.random() > 0.5 ? 1 : -1);
+            ball.dy = CONFIG.BALL_SPEED_Y;
+            initStars();
+            mouseTrail = [];
+            collisionParticles = [];
+            paddleHitAnim = false;
+            paddleAnimFrames = 0;
+        }
+        
+        window.addEventListener('resize', () => {
+            resizeAndReset();
+        });
+        
+        function gameLoop() {
+            if (!canvas.isConnected) return;
+            updateGame();
+            updateStars();
+            updateTrailAges();
+            updateCollisionParticles();
+            draw();
+            animationId = requestAnimationFrame(gameLoop);
+        }
+        
+        function init() {
+            resizeAndReset();
+            autoMode = true;
+            gameRunning = true;
+            gameLoop();
+        }
+        
+        init();
+    })();
+    
+    // 独立时钟模块
+    function updateClock() {
+        const now = new Date();
+        const h = String(now.getHours()).padStart(2, '0');
+        const m = String(now.getMinutes()).padStart(2, '0');
+        const s = String(now.getSeconds()).padStart(2, '0');
+        const year = now.getFullYear();
+        const month = String(now.getMonth() + 1).padStart(2, '0');
+        const day = String(now.getDate()).padStart(2, '0');
+        const week = "日一二三四五六"[now.getDay()];
+        document.querySelector(".time").innerText = `${h}:${m}:${s}`;
+        document.querySelector(".date").innerText = `${year}-${month}-${day} 星期${week}`;
+    }
+    setInterval(updateClock, 1000);
+    updateClock();
+</script>
+</body>
+</html>
