@@ -201,6 +201,16 @@
         let shootCooldown = 0;
         let enemySpawnCounter = 12;
         
+        // ---------- 键盘控制状态 ----------
+        let keyboardControl = {
+            left: false,
+            right: false,
+            up: false,
+            down: false
+        };
+        let lastKeyboardTime = 0;
+        const KEYBOARD_TIMEOUT = 2000; // 2秒无操作后切换回自动模式
+        
         // 特效
         let collisionParticles = [];
         let stars = [];
@@ -350,6 +360,42 @@
         });
         canvas.addEventListener('touchstart', (e) => e.preventDefault());
         
+        // ---------- 键盘事件监听 ----------
+        document.addEventListener('keydown', (e) => {
+            switch(e.key) {
+                case 'ArrowLeft':
+                    keyboardControl.left = true;
+                    break;
+                case 'ArrowRight':
+                    keyboardControl.right = true;
+                    break;
+                case 'ArrowUp':
+                    keyboardControl.up = true;
+                    break;
+                case 'ArrowDown':
+                    keyboardControl.down = true;
+                    break;
+            }
+            lastKeyboardTime = Date.now();
+        });
+        
+        document.addEventListener('keyup', (e) => {
+            switch(e.key) {
+                case 'ArrowLeft':
+                    keyboardControl.left = false;
+                    break;
+                case 'ArrowRight':
+                    keyboardControl.right = false;
+                    break;
+                case 'ArrowUp':
+                    keyboardControl.up = false;
+                    break;
+                case 'ArrowDown':
+                    keyboardControl.down = false;
+                    break;
+            }
+        });
+        
         function updateTrail() { for (let i=0; i<mouseTrail.length; i++) mouseTrail[i].age += 0.2; mouseTrail = mouseTrail.filter(t => t.age < 2.5); }
         function drawRainbowTrail() {
             if (!mouseTrail.length) return;
@@ -388,108 +434,125 @@
             ctx.restore();
         }
         
-        // ========= 智能AI：激进攻击 + 主动吃宝箱 + 紧急躲避 =========
+        // ========= 智能AI + 键盘控制 =========
         function updatePlayerAI() {
             if (player.invincibleTimer > 0) player.invincibleTimer--;
-            let forceX = 0, forceY = 0;
-            let pc = { x: player.x + player.w/2, y: player.y + player.h/2 };
-            let closestEnemy = null, closestDist = Infinity;
             
-            // 先找出最近的敌人用于攻击倾向
-            for (let e of enemies) {
-                let ec = { x: e.x + e.w/2, y: e.y + e.h/2 };
-                let d2 = (pc.x - ec.x)**2 + (pc.y - ec.y)**2;
-                if (d2 < closestDist) { closestDist = d2; closestEnemy = e; }
-            }
+            // 检查是否使用键盘控制
+            const timeSinceLastKey = Date.now() - lastKeyboardTime;
+            const useKeyboard = lastKeyboardTime > 0 && timeSinceLastKey <= KEYBOARD_TIMEOUT;
             
-            // 攻击倾向：更激进地追击敌人
-            if (closestEnemy) {
-                let tx = closestEnemy.x + closestEnemy.w/2, ty = closestEnemy.y + closestEnemy.h/2;
-                let dx = tx - pc.x, dy = ty - pc.y;
-                let dist = Math.hypot(dx, dy);
-                if (dist > 0.1) {
-                    // 增强攻击倾向，距离越近越强
-                    let attract = CONFIG.ATTRACT_ENEMY_FORCE * Math.min(1.8, 130 / (dist + 15));
-                    if (dist < 40) attract *= 0.6;  // 太近时才减弱攻击
-                    forceX += (dx / dist) * attract;
-                    forceY += (dy / dist) * attract;
-                }
-            }
-            
-            // 主动吃宝箱：优先吸引到宝箱
-            for (let p of powerups) {
-                let boxCenter = { x: p.x + p.w/2, y: p.y + p.h/2 };
-                let dx = boxCenter.x - pc.x;
-                let dy = boxCenter.y - pc.y;
-                let dist = Math.hypot(dx, dy);
-                if (dist < 250 && dist > 0.1) {
-                    // 宝箱吸引力随距离增加而减弱
-                    let attractStrength = CONFIG.ATTRACT_POWERUP_FORCE * (1 - dist / 250);
-                    // 根据宝箱类型调整优先级
-                    if (p.type === 'weapon' && player.weaponLevel < CONFIG.MAX_WEAPON_LEVEL) {
-                        attractStrength *= 1.5;  // 武器升级优先
-                    } else if (p.type === 'shield' && player.shield < CONFIG.MAX_SHIELD) {
-                        attractStrength *= 1.3;  // 护盾次之
-                    }
-                    forceX += (dx / dist) * attractStrength;
-                    forceY += (dy / dist) * attractStrength;
-                }
-            }
-            
-            // 躲避敌人：核心防撞逻辑，距离越近躲避力急剧增加
-            for (let e of enemies) {
-                let ec = { x: e.x + e.w/2, y: e.y + e.h/2 };
-                let dx = pc.x - ec.x;
-                let dy = pc.y - ec.y;
-                let dist = Math.hypot(dx, dy);
-                if (dist < 0.1) dist = 0.1;
-                let avoidStrength = 0;
-                if (dist < 45) {
-                    // 紧急状态：超强躲避
-                    avoidStrength = CONFIG.AVOID_ENEMY_URGENT_FORCE * (1 + (45 - dist) / 20);
-                    avoidStrength = Math.min(avoidStrength, 10.0);
-                } else if (dist < 85) {
-                    // 正常躲避
-                    avoidStrength = CONFIG.AVOID_ENEMY_FORCE_BASE * (1 - (dist - 45) / 40);
-                    avoidStrength = Math.max(avoidStrength, 1.2);
-                }
-                if (avoidStrength > 0) {
-                    forceX += (dx / dist) * avoidStrength;
-                    forceY += (dy / dist) * avoidStrength;
-                }
-            }
-            
-            // 躲避敌方子弹
-            for (let eb of enemyBullets) {
-                let bc = { x: eb.x + eb.w/2, y: eb.y + eb.h/2 };
-                let dx = pc.x - bc.x, dy = pc.y - bc.y;
-                let dist = Math.hypot(dx, dy);
-                if (dist < 80 && dist > 0.1) {
-                    let threat = CONFIG.AVOID_BULLET_FORCE / (dist * 0.2 + 7);
-                    forceX += (dx / dist) * threat;
-                    forceY += (dy / dist) * threat;
-                }
-            }
-            
-            // 巡逻与随机微动（只在没有敌人和宝箱时）
-            if (enemies.length === 0 && powerups.length === 0) {
-                let t = Date.now() * 0.004;
-                forceX += Math.sin(t) * 2.2;
-                forceY += Math.cos(t * 0.9) * 1.4;
+            if (useKeyboard) {
+                // 键盘控制模式
+                const moveSpeed = 5;
+                if (keyboardControl.left) player.x -= moveSpeed;
+                if (keyboardControl.right) player.x += moveSpeed;
+                if (keyboardControl.up) player.y -= moveSpeed;
+                if (keyboardControl.down) player.y += moveSpeed;
             } else {
-                forceX += (Math.random() - 0.5) * 0.4;
-                forceY += (Math.random() - 0.5) * 0.3;
+                // AI自动控制模式
+                let forceX = 0, forceY = 0;
+                let pc = { x: player.x + player.w/2, y: player.y + player.h/2 };
+                let closestEnemy = null, closestDist = Infinity;
+                
+                // 先找出最近的敌人用于攻击倾向
+                for (let e of enemies) {
+                    let ec = { x: e.x + e.w/2, y: e.y + e.h/2 };
+                    let d2 = (pc.x - ec.x)**2 + (pc.y - ec.y)**2;
+                    if (d2 < closestDist) { closestDist = d2; closestEnemy = e; }
+                }
+                
+                // 攻击倾向：更激进地追击敌人
+                if (closestEnemy) {
+                    let tx = closestEnemy.x + closestEnemy.w/2, ty = closestEnemy.y + closestEnemy.h/2;
+                    let dx = tx - pc.x, dy = ty - pc.y;
+                    let dist = Math.hypot(dx, dy);
+                    if (dist > 0.1) {
+                        // 增强攻击倾向，距离越近越强
+                        let attract = CONFIG.ATTRACT_ENEMY_FORCE * Math.min(1.8, 130 / (dist + 15));
+                        if (dist < 40) attract *= 0.6;  // 太近时才减弱攻击
+                        forceX += (dx / dist) * attract;
+                        forceY += (dy / dist) * attract;
+                    }
+                }
+                
+                // 主动吃宝箱：优先吸引到宝箱
+                for (let p of powerups) {
+                    let boxCenter = { x: p.x + p.w/2, y: p.y + p.h/2 };
+                    let dx = boxCenter.x - pc.x;
+                    let dy = boxCenter.y - pc.y;
+                    let dist = Math.hypot(dx, dy);
+                    if (dist < 250 && dist > 0.1) {
+                        // 宝箱吸引力随距离增加而减弱
+                        let attractStrength = CONFIG.ATTRACT_POWERUP_FORCE * (1 - dist / 250);
+                        // 根据宝箱类型调整优先级
+                        if (p.type === 'weapon' && player.weaponLevel < CONFIG.MAX_WEAPON_LEVEL) {
+                            attractStrength *= 1.5;  // 武器升级优先
+                        } else if (p.type === 'shield' && player.shield < CONFIG.MAX_SHIELD) {
+                            attractStrength *= 1.3;  // 护盾次之
+                        }
+                        forceX += (dx / dist) * attractStrength;
+                        forceY += (dy / dist) * attractStrength;
+                    }
+                }
+                
+                // 躲避敌人：核心防撞逻辑，距离越近躲避力急剧增加
+                for (let e of enemies) {
+                    let ec = { x: e.x + e.w/2, y: e.y + e.h/2 };
+                    let dx = pc.x - ec.x;
+                    let dy = pc.y - ec.y;
+                    let dist = Math.hypot(dx, dy);
+                    if (dist < 0.1) dist = 0.1;
+                    let avoidStrength = 0;
+                    if (dist < 45) {
+                        // 紧急状态：超强躲避
+                        avoidStrength = CONFIG.AVOID_ENEMY_URGENT_FORCE * (1 + (45 - dist) / 20);
+                        avoidStrength = Math.min(avoidStrength, 10.0);
+                    } else if (dist < 85) {
+                        // 正常躲避
+                        avoidStrength = CONFIG.AVOID_ENEMY_FORCE_BASE * (1 - (dist - 45) / 40);
+                        avoidStrength = Math.max(avoidStrength, 1.2);
+                    }
+                    if (avoidStrength > 0) {
+                        forceX += (dx / dist) * avoidStrength;
+                        forceY += (dy / dist) * avoidStrength;
+                    }
+                }
+                
+                // 躲避敌方子弹
+                for (let eb of enemyBullets) {
+                    let bc = { x: eb.x + eb.w/2, y: eb.y + eb.h/2 };
+                    let dx = pc.x - bc.x, dy = pc.y - bc.y;
+                    let dist = Math.hypot(dx, dy);
+                    if (dist < 80 && dist > 0.1) {
+                        let threat = CONFIG.AVOID_BULLET_FORCE / (dist * 0.2 + 7);
+                        forceX += (dx / dist) * threat;
+                        forceY += (dy / dist) * threat;
+                    }
+                }
+                
+                // 巡逻与随机微动（只在没有敌人和宝箱时）
+                if (enemies.length === 0 && powerups.length === 0) {
+                    let t = Date.now() * 0.004;
+                    forceX += Math.sin(t) * 2.2;
+                    forceY += Math.cos(t * 0.9) * 1.4;
+                } else {
+                    forceX += (Math.random() - 0.5) * 0.4;
+                    forceY += (Math.random() - 0.5) * 0.3;
+                }
+                
+                let mag = Math.hypot(forceX, forceY);
+                if (mag > CONFIG.MAX_STEER) {
+                    forceX = forceX / mag * CONFIG.MAX_STEER;
+                    forceY = forceY / mag * CONFIG.MAX_STEER;
+                }
+                let nx = player.x + forceX, ny = player.y + forceY;
+                player.x = nx; player.y = ny;
             }
             
-            let mag = Math.hypot(forceX, forceY);
-            if (mag > CONFIG.MAX_STEER) {
-                forceX = forceX / mag * CONFIG.MAX_STEER;
-                forceY = forceY / mag * CONFIG.MAX_STEER;
-            }
-            let nx = player.x + forceX, ny = player.y + forceY;
-            nx = Math.min(Math.max(4, nx), cw - player.w - 4);
-            ny = Math.min(Math.max(30, ny), ch - player.h - 15);
-            player.x = nx; player.y = ny;
+            // 边界限制（两种模式都需要）
+            player.x = Math.min(Math.max(4, player.x), cw - player.w - 4);
+            player.y = Math.min(Math.max(30, player.y), ch - player.h - 15);
         }
         
         // ========= 武器系统 =========
