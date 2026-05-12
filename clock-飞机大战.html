@@ -154,6 +154,9 @@
         let gameRunning = true;
         let animationId = null;
         
+        // 模式切换通知
+        let modeNotification = null;
+        
         // 玩家状态
         let player = {
             x: cw/2 - 14, y: ch - 80,
@@ -210,8 +213,6 @@
             up: false,
             down: false
         };
-        let lastKeyboardTime = 0;
-        const KEYBOARD_TIMEOUT = 2000; // 2秒无操作后切换回自动模式
         
         // 特效
         let collisionParticles = [];
@@ -364,6 +365,15 @@
         
         // ---------- 键盘事件监听 ----------
         document.addEventListener('keydown', (e) => {
+            // 空格键切换模式
+            if (e.key === ' ' || e.code === 'Space') {
+                e.preventDefault();
+                isManualMode = !isManualMode;
+                triggerClockShake();
+                showModeNotification(isManualMode ? 'MANUAL' : 'AUTO');
+                return;
+            }
+            
             switch(e.key) {
                 case 'ArrowLeft':
                     keyboardControl.left = true;
@@ -378,7 +388,6 @@
                     keyboardControl.down = true;
                     break;
             }
-            lastKeyboardTime = Date.now();
         });
         
         document.addEventListener('keyup', (e) => {
@@ -399,6 +408,57 @@
         });
         
         function updateTrail() { for (let i=0; i<mouseTrail.length; i++) mouseTrail[i].age += 0.2; mouseTrail = mouseTrail.filter(t => t.age < 2.5); }
+        
+        // ---------- 模式切换通知 ----------
+        function showModeNotification(mode) {
+            modeNotification = { text: mode, startTime: Date.now(), duration: 900 };
+        }
+        
+        function drawModeNotification() {
+            if (!modeNotification) return;
+            const elapsed = Date.now() - modeNotification.startTime;
+            if (elapsed > modeNotification.duration) { modeNotification = null; return; }
+            const progress = elapsed / modeNotification.duration;
+            const alpha = progress < 0.15 ? progress / 0.15 : 1 - Math.pow((progress - 0.15) / 0.85, 0.5);
+            const scale = 1 + progress * 0.15;
+            ctx.save();
+            ctx.globalAlpha = Math.max(0, alpha);
+            const baseFontSize = 42;
+            const fontSize = baseFontSize * scale;
+            ctx.font = `bold ${fontSize}px Arial`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            const centerX = cw / 2;
+            const centerY = ch * 0.2;
+            const textWidth = ctx.measureText(modeNotification.text).width;
+            const pad = 24;
+            const rx = centerX - textWidth/2 - pad;
+            const ry = centerY - fontSize/2 - pad/2;
+            const rw = textWidth + pad * 2;
+            const rh = fontSize + pad;
+            const r = 12;
+            ctx.fillStyle = 'rgba(0,0,0,0.55)';
+            ctx.beginPath();
+            ctx.moveTo(rx + r, ry);
+            ctx.lineTo(rx + rw - r, ry);
+            ctx.quadraticCurveTo(rx + rw, ry, rx + rw, ry + r);
+            ctx.lineTo(rx + rw, ry + rh - r);
+            ctx.quadraticCurveTo(rx + rw, ry + rh, rx + rw - r, ry + rh);
+            ctx.lineTo(rx + r, ry + rh);
+            ctx.quadraticCurveTo(rx, ry + rh, rx, ry + rh - r);
+            ctx.lineTo(rx, ry + r);
+            ctx.quadraticCurveTo(rx, ry, rx + r, ry);
+            ctx.closePath();
+            ctx.fill();
+            const isAuto = modeNotification.text === 'AUTO';
+            ctx.fillStyle = isAuto ? '#4CAF50' : '#45B7D1';
+            ctx.fillText(modeNotification.text, centerX, centerY);
+            ctx.globalAlpha = Math.max(0, alpha * 0.6);
+            ctx.font = `${14 * scale}px Arial`;
+            ctx.fillStyle = '#c0c0c0';
+            ctx.fillText(isAuto ? 'AI 自动躲避' : '方向键控制移动', centerX, centerY + fontSize / 2 + 14);
+            ctx.restore();
+        }
         function drawRainbowTrail() {
             if (!mouseTrail.length) return;
             for (let i=0; i<mouseTrail.length; i++) {
@@ -437,12 +497,13 @@
         }
         
         // ========= 智能AI + 键盘控制 =========
+        let isManualMode = false;
+        
         function updatePlayerAI() {
             if (player.invincibleTimer > 0) player.invincibleTimer--;
             
             // 检查是否使用键盘控制
-            const timeSinceLastKey = Date.now() - lastKeyboardTime;
-            const useKeyboard = lastKeyboardTime > 0 && timeSinceLastKey <= KEYBOARD_TIMEOUT;
+            const useKeyboard = isManualMode && (keyboardControl.left || keyboardControl.right || keyboardControl.up || keyboardControl.down);
             
             if (useKeyboard) {
                 // 键盘控制模式
@@ -1131,6 +1192,31 @@
                     ctx.fillText(`${power.icon}${power.time}s`, x, powerBarY + powerBarHeight + 2);
                 });
             }
+            
+            // 绘制模式指示器
+            const modeText = isManualMode ? 'MANUAL' : 'AUTO';
+            const modeColor = isManualMode ? '#45B7D1' : '#4CAF50';
+            ctx.font = 'bold 13px Arial';
+            ctx.textAlign = 'right';
+            ctx.fillStyle = modeColor;
+            ctx.globalAlpha = 0.85;
+            const modeWidth = ctx.measureText(modeText).width;
+            ctx.fillText(modeText, cw - 12, 10);
+            ctx.globalAlpha = 0.6;
+            ctx.fillStyle = modeColor;
+            const dotX = cw - 12 - modeWidth - 8;
+            ctx.beginPath();
+            ctx.arc(dotX, 17, 3, 0, Math.PI * 2);
+            ctx.fill();
+            
+            ctx.font = '11px Arial';
+            ctx.fillStyle = '#707070';
+            ctx.globalAlpha = 0.5;
+            ctx.textAlign = 'center';
+            ctx.fillText('SPACE 切换模式', cw / 2, 10);
+            
+            // 重置全局alpha
+            ctx.globalAlpha = 1;
         }
         
         function updateGame() {
@@ -1185,6 +1271,7 @@
             drawRainbowTrail();
             drawPixelCursor(currentMouseX, currentMouseY);
             drawUI();
+            drawModeNotification();
         }
         
         function resizeAndReset() {
