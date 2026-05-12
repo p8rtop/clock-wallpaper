@@ -100,12 +100,13 @@
         const CONFIG = {
             GRID_SIZE: 20,
             SNAKE_SPEED: 150,
-            AUTO_MODE_DELAY: 500,
             STAR_COUNT: 130,
             TRAIL_LENGTH: 12,
             FOOD_GLOW_PULSE: 0.003,
             INITIAL_SNAKE_LENGTH: 3,
             SNAKE_HEAD_COLOR: '#4CAF50',
+            // 时钟区域额外的安全边距（网格数）
+            CLOCK_PADDING: 1,
         };
         let gameRunning = true;
         let animationId = null;
@@ -117,21 +118,38 @@
         let nextDirection = { x: 1, y: 0 };
         let food = null;
         let lastMoveTime = 0;
-        let lastKeyPressTime = Date.now();
         let gridCols = 0;
         let gridRows = 0;
-        let playAreaTop = 0;
-        let playAreaBottom = 0;
-        let pathQueue = [];
-        // ========== 新增：永久固定的尾巴颜色队列 ==========
-        // 当食物颜色从头部传递到尾巴、即将被移除时，保存到这里
-        // 绘制时尾巴最后 N 节使用此队列中的颜色，实现"永久固定"
+        // 模式控制
+        let isManualMode = false;
+        let modeNotification = null;
+        // 永久尾巴颜色
         let permanentTailColors = [];
-        // 默认蛇身颜色（非食物颜色），用于判断是否为食物颜色
         const DEFAULT_SNAKE_COLORS = ['#45a049', '#4CAF50'];
         function isFoodColor(color) {
             return color && !DEFAULT_SNAKE_COLORS.includes(color);
         }
+        // ===== 时钟区域障碍物 =====
+        // 缓存时钟在网格坐标中的边界，避免每帧重复计算
+        let clockGridBounds = null;
+        function updateClockGridBounds() {
+            const clockRect = getClockRectInCanvas();
+            if (!clockRect) { clockGridBounds = null; return; }
+            const pad = CONFIG.CLOCK_PADDING;
+            clockGridBounds = {
+                minX: Math.floor(clockRect.x / CONFIG.GRID_SIZE) - pad,
+                maxX: Math.ceil((clockRect.x + clockRect.w) / CONFIG.GRID_SIZE) + pad,
+                minY: Math.floor(clockRect.y / CONFIG.GRID_SIZE) - pad,
+                maxY: Math.ceil((clockRect.y + clockRect.h) / CONFIG.GRID_SIZE) + pad
+            };
+        }
+        // 判断网格坐标是否落在时钟区域内
+        function isInClockArea(gx, gy) {
+            if (!clockGridBounds) return false;
+            return gx >= clockGridBounds.minX && gx <= clockGridBounds.maxX &&
+                gy >= clockGridBounds.minY && gy <= clockGridBounds.maxY;
+        }
+        // 食物颜色
         const foodColors = [
             '#FF6B6B', '#E056A0', '#45B7D1', '#FFA07A', '#F7DC6F',
             '#BB8FCE', '#85C1E2', '#F8B739', '#FF69B4', '#FF4500'
@@ -145,7 +163,7 @@
             lastFoodColorIndex = colorIndex;
             return foodColors[colorIndex];
         }
-        // 碰撞特效粒子系统
+        // ===== 碰撞特效粒子系统 =====
         let collisionParticles = [];
         class CollisionParticle {
             constructor(x, y, vx, vy, color, size, life) {
@@ -188,7 +206,7 @@
             for (let p of collisionParticles) p.draw(ctx);
             ctx.restore();
         }
-        // 星空粒子系统
+        // ===== 星空粒子系统 =====
         let stars = [];
         class Star {
             constructor() {
@@ -232,7 +250,7 @@
         }
         function updateStars() { for (let s of stars) s.update(); }
         function drawStars() { for (let s of stars) s.draw(ctx); }
-        // 彩虹像素拖尾
+        // ===== 彩虹像素拖尾 =====
         let mouseTrail = [];
         let currentMouseX = canvasWidth/2;
         let currentMouseY = canvasHeight/2;
@@ -263,20 +281,6 @@
             if (mouseTrail.length > CONFIG.TRAIL_LENGTH) mouseTrail.pop();
         });
         canvas.addEventListener('touchstart', (e) => e.preventDefault());
-        // 键盘事件监听
-        let hasUserControl = false;
-        document.addEventListener('keydown', (e) => {
-            switch(e.key) {
-                case 'ArrowUp': case 'w': case 'W':
-                    if (direction.y !== 1) { nextDirection = { x: 0, y: -1 }; hasUserControl = true; lastKeyPressTime = Date.now(); } break;
-                case 'ArrowDown': case 's': case 'S':
-                    if (direction.y !== -1) { nextDirection = { x: 0, y: 1 }; hasUserControl = true; lastKeyPressTime = Date.now(); } break;
-                case 'ArrowLeft': case 'a': case 'A':
-                    if (direction.x !== 1) { nextDirection = { x: -1, y: 0 }; hasUserControl = true; lastKeyPressTime = Date.now(); } break;
-                case 'ArrowRight': case 'd': case 'D':
-                    if (direction.x !== -1) { nextDirection = { x: 1, y: 0 }; hasUserControl = true; lastKeyPressTime = Date.now(); } break;
-            }
-        });
         function updateTrailAges() {
             for (let i = 0; i < mouseTrail.length; i++) mouseTrail[i].age += 0.2;
             mouseTrail = mouseTrail.filter(t => t.age < 2.5);
@@ -325,9 +329,10 @@
             const top = Math.min(timeRect.top, dateRect.top);
             const bottom = Math.max(timeRect.bottom, dateRect.bottom);
             return {
-                x: (left - canvasRect.left) * scaleX, y: (top - canvasRect.top) * scaleY,
-                w: (right - left) * scaleX, h: (bottom - top) * scaleY,
-                topY: (top - canvasRect.top) * scaleY, bottomY: (bottom - canvasRect.top) * scaleY
+                x: (left - canvasRect.left) * scaleX,
+                y: (top - canvasRect.top) * scaleY,
+                w: (right - left) * scaleX,
+                h: (bottom - top) * scaleY
             };
         }
         function triggerClockShake() {
@@ -335,131 +340,339 @@
             clockContainer.classList.add('shake-clock');
             setTimeout(() => { clockContainer.classList.remove('shake-clock'); }, 240);
         }
+        // ===== 全屏游戏区域计算 =====
         function calculatePlayArea() {
-            const clockRect = getClockRectInCanvas();
-            playAreaTop = CONFIG.GRID_SIZE;
-            if (clockRect && clockRect.topY > 0) {
-                playAreaBottom = clockRect.topY - 50;
-            } else {
-                playAreaBottom = canvasHeight * 0.4;
-            }
             gridCols = Math.floor(canvasWidth / CONFIG.GRID_SIZE);
-            gridRows = Math.floor((playAreaBottom - playAreaTop) / CONFIG.GRID_SIZE);
-            if (gridRows < 10) gridRows = 10;
+            gridRows = Math.floor(canvasHeight / CONFIG.GRID_SIZE);
         }
+        // ===== 初始化蛇（全屏区域，避开时钟） =====
         function initSnake() {
             snake = [];
             snakeColors = [];
-            const startX = Math.floor(gridCols / 2);
-            const startY = Math.floor(gridRows / 2);
+            // 在屏幕左侧中间位置开始，如果被时钟挡住就向右偏移
+            let startX = 4;
+            let startY = Math.floor(gridRows / 2);
+            if (isInClockArea(startX, startY)) {
+                // 找一个不在时钟区域的位置
+                for (let x = 0; x < gridCols; x++) {
+                    if (!isInClockArea(x, startY)) {
+                        startX = x;
+                        break;
+                    }
+                }
+            }
             for (let i = 0; i < CONFIG.INITIAL_SNAKE_LENGTH; i++) {
-                snake.push({ x: startX - i, y: startY });
+                let sx = startX - i;
+                // 穿墙处理
+                if (sx < 0) sx += gridCols;
+                snake.push({ x: sx, y: startY });
                 snakeColors.push('#45a049');
             }
             direction = { x: 1, y: 0 };
             nextDirection = { x: 1, y: 0 };
         }
+        // ===== 生成食物（全屏区域，避开时钟和蛇身） =====
         function generateFood() {
             let newFood; let valid = false;
-            while (!valid) {
+            let attempts = 0;
+            while (!valid && attempts < 5000) {
+                attempts++;
                 newFood = {
                     x: Math.floor(Math.random() * gridCols),
-                    y: Math.floor(Math.random() * gridRows) + Math.floor(playAreaTop / CONFIG.GRID_SIZE),
+                    y: Math.floor(Math.random() * gridRows),
                     color: getRandomColor()
                 };
-                valid = true;
-                for (let segment of snake) {
-                    if (segment.x === newFood.x && segment.y === newFood.y) { valid = false; break; }
+                valid = !isInClockArea(newFood.x, newFood.y);
+                if (valid) {
+                    for (let segment of snake) {
+                        if (segment.x === newFood.x && segment.y === newFood.y) { valid = false; break; }
+                    }
                 }
             }
             food = newFood;
         }
         function resetGame() {
             calculatePlayArea();
+            updateClockGridBounds();
             initSnake();
             generateFood();
             collisionParticles = [];
-            permanentTailColors = []; // 重置永久颜色队列
+            permanentTailColors = [];
         }
-        // BFS寻路算法
-        function findPath(start, target, obstacles) {
+        // ===== 键盘事件 =====
+        document.addEventListener('keydown', (e) => {
+            if (e.key === ' ' || e.code === 'Space') {
+                e.preventDefault();
+                isManualMode = !isManualMode;
+                triggerClockShake();
+                showModeNotification(isManualMode ? 'MANUAL' : 'AUTO');
+                return;
+            }
+            if (!isManualMode) return;
+            switch(e.key) {
+                case 'ArrowUp': case 'w': case 'W':
+                    if (direction.y !== 1) nextDirection = { x: 0, y: -1 }; break;
+                case 'ArrowDown': case 's': case 'S':
+                    if (direction.y !== -1) nextDirection = { x: 0, y: 1 }; break;
+                case 'ArrowLeft': case 'a': case 'A':
+                    if (direction.x !== 1) nextDirection = { x: -1, y: 0 }; break;
+                case 'ArrowRight': case 'd': case 'D':
+                    if (direction.x !== -1) nextDirection = { x: 1, y: 0 }; break;
+            }
+        });
+        // ===== 模式切换通知 =====
+        function showModeNotification(mode) {
+            modeNotification = { text: mode, startTime: Date.now(), duration: 900 };
+        }
+        function drawModeNotification() {
+            if (!modeNotification) return;
+            const elapsed = Date.now() - modeNotification.startTime;
+            if (elapsed > modeNotification.duration) { modeNotification = null; return; }
+            const progress = elapsed / modeNotification.duration;
+            const alpha = progress < 0.15 ? progress / 0.15 : 1 - Math.pow((progress - 0.15) / 0.85, 0.5);
+            const scale = 1 + progress * 0.15;
+            ctx.save();
+            ctx.globalAlpha = Math.max(0, alpha);
+            const baseFontSize = 42;
+            const fontSize = baseFontSize * scale;
+            ctx.font = `bold ${fontSize}px Arial`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            // 通知显示在屏幕上半部分（避开中央时钟区域）
+            const centerX = canvasWidth / 2;
+            const centerY = canvasHeight * 0.2;
+            const textWidth = ctx.measureText(modeNotification.text).width;
+            const pad = 24;
+            const rx = centerX - textWidth/2 - pad;
+            const ry = centerY - fontSize/2 - pad/2;
+            const rw = textWidth + pad * 2;
+            const rh = fontSize + pad;
+            const r = 12;
+            ctx.fillStyle = 'rgba(0,0,0,0.55)';
+            ctx.beginPath();
+            ctx.moveTo(rx + r, ry);
+            ctx.lineTo(rx + rw - r, ry);
+            ctx.quadraticCurveTo(rx + rw, ry, rx + rw, ry + r);
+            ctx.lineTo(rx + rw, ry + rh - r);
+            ctx.quadraticCurveTo(rx + rw, ry + rh, rx + rw - r, ry + rh);
+            ctx.lineTo(rx + r, ry + rh);
+            ctx.quadraticCurveTo(rx, ry + rh, rx, ry + rh - r);
+            ctx.lineTo(rx, ry + r);
+            ctx.quadraticCurveTo(rx, ry, rx + r, ry);
+            ctx.closePath();
+            ctx.fill();
+            const isAuto = modeNotification.text === 'AUTO';
+            ctx.fillStyle = isAuto ? '#4CAF50' : '#45B7D1';
+            ctx.fillText(modeNotification.text, centerX, centerY);
+            ctx.globalAlpha = Math.max(0, alpha * 0.6);
+            ctx.font = `${14 * scale}px Arial`;
+            ctx.fillStyle = '#c0c0c0';
+            ctx.fillText(isAuto ? 'AI 自动寻路' : '方向键 / WASD 控制', centerX, centerY + fontSize / 2 + 14);
+            ctx.restore();
+        }
+        // ===================================================================
+        // ===== AI 寻路算法（全屏 + 时钟障碍） =====
+        // ===================================================================
+        // 构建蛇身障碍物集合
+        function getSnakeObstacles(options = {}) {
+            const { excludeHead = true, excludeTail = true } = options;
+            const obstacles = new Set();
+            const start = excludeHead ? 1 : 0;
+            const end = excludeTail ? snake.length - 1 : snake.length;
+            for (let i = start; i < end; i++) {
+                obstacles.add(`${snake[i].x},${snake[i].y}`);
+            }
+            return obstacles;
+        }
+        // 穿墙坐标修正
+        function wrapX(x) { return ((x % gridCols) + gridCols) % gridCols; }
+        function wrapY(y) { return ((y % gridRows) + gridRows) % gridRows; }
+        // BFS 寻路（全屏穿墙 + 时钟区域不可进入）
+        function findPath(start, target, snakeObstacles) {
             const queue = [[start]];
             const visited = new Set();
             visited.add(`${start.x},${start.y}`);
-            const directions = [{ x: 0, y: -1 }, { x: 0, y: 1 }, { x: -1, y: 0 }, { x: 1, y: 0 }];
+            const directions = [
+                { x: 0, y: -1 }, { x: 0, y: 1 },
+                { x: -1, y: 0 }, { x: 1, y: 0 }
+            ];
             while (queue.length > 0) {
                 const path = queue.shift();
                 const current = path[path.length - 1];
-                if (current.x === target.x && current.y === target.y) return path;
+                if (current.x === target.x && current.y === target.y) {
+                    return path;
+                }
                 for (let dir of directions) {
-                    const next = { x: current.x + dir.x, y: current.y + dir.y };
-                    if (next.x < 0 || next.x >= gridCols) continue;
-                    const minGridY = Math.floor(playAreaTop / CONFIG.GRID_SIZE);
-                    const maxGridY = Math.floor((playAreaBottom - CONFIG.GRID_SIZE) / CONFIG.GRID_SIZE);
-                    if (next.y < minGridY || next.y > maxGridY) continue;
-                    const key = `${next.x},${next.y}`;
-                    if (visited.has(key) || obstacles.has(key)) continue;
+                    const nx = wrapX(current.x + dir.x);
+                    const ny = wrapY(current.y + dir.y);
+                    const key = `${nx},${ny}`;
+                    // 检查：已访问 / 蛇身障碍 / 时钟区域障碍
+                    if (visited.has(key) || snakeObstacles.has(key) || isInClockArea(nx, ny)) continue;
                     visited.add(key);
-                    queue.push([...path, next]);
+                    queue.push([...path, { x: nx, y: ny }]);
                 }
             }
             return null;
         }
-        function updateAutoMode() {
-            if (Date.now() - lastKeyPressTime < CONFIG.AUTO_MODE_DELAY) return;
-            if (!food) return;
-            const head = snake[0];
-            const obstacles = new Set();
-            for (let i = 1; i < snake.length; i++) obstacles.add(`${snake[i].x},${snake[i].y}`);
-            if (pathQueue.length === 0) {
-                const path = findPath(head, food, obstacles);
-                if (path && path.length > 1) pathQueue = path.slice(1);
+        // 洪水填充计算可达空间
+        function floodFillCount(startX, startY, snakeObstacles) {
+            const visited = new Set();
+            const queue = [{ x: startX, y: startY }];
+            visited.add(`${startX},${startY}`);
+            let count = 0;
+            while (queue.length > 0) {
+                const current = queue.shift();
+                count++;
+                if (count > snake.length) return count;
+                const dirs = [{ x: 0, y: -1 }, { x: 0, y: 1 }, { x: -1, y: 0 }, { x: 1, y: 0 }];
+                for (let dir of dirs) {
+                    const nx = wrapX(current.x + dir.x);
+                    const ny = wrapY(current.y + dir.y);
+                    const key = `${nx},${ny}`;
+                    // 同样排除时钟区域
+                    if (visited.has(key) || snakeObstacles.has(key) || isInClockArea(nx, ny)) continue;
+                    visited.add(key);
+                    queue.push({ x: nx, y: ny });
+                }
             }
-            if (pathQueue.length > 0) {
-                const nextPos = pathQueue.shift();
-                const dx = nextPos.x - head.x;
-                const dy = nextPos.y - head.y;
-                if ((dx !== 0 && direction.x !== -dx) || (dy !== 0 && direction.y !== -dy)) {
-                    nextDirection = { x: dx, y: dy };
+            return count;
+        }
+        // 安全检查：模拟走完路径后能否找到尾巴
+        function isPathSafe(pathToFood) {
+            const totalCells = gridCols * gridRows;
+            if (snake.length < totalCells * 0.3) return true;
+            if (pathToFood.length <= 3) return true;
+            const simSnake = snake.map(s => ({ x: s.x, y: s.y }));
+            for (let step = 1; step < pathToFood.length; step++) {
+                const nextPos = pathToFood[step];
+                simSnake.unshift({ x: nextPos.x, y: nextPos.y });
+                if (food && nextPos.x === food.x && nextPos.y === food.y) {
+                    // 吃到食物，蛇增长
+                } else {
+                    simSnake.pop();
                 }
-            } else {
-                const safeDirections = [{ x: 0, y: -1 }, { x: 0, y: 1 }, { x: -1, y: 0 }, { x: 1, y: 0 }];
-                for (let dir of safeDirections) {
-                    if (dir.x === -direction.x && dir.y === -direction.y) continue;
-                    const nextX = head.x + dir.x;
-                    const nextY = head.y + dir.y;
-                    const key = `${nextX},${nextY}`;
-                    if (nextX < 0 || nextX >= gridCols) continue;
-                    const minGridY = Math.floor(playAreaTop / CONFIG.GRID_SIZE);
-                    const maxGridY = Math.floor((playAreaBottom - CONFIG.GRID_SIZE) / CONFIG.GRID_SIZE);
-                    if (nextY < minGridY || nextY > maxGridY) continue;
-                    if (!obstacles.has(key)) { nextDirection = dir; break; }
+            }
+            const simHead = simSnake[0];
+            const simTail = simSnake[simSnake.length - 1];
+            const simObstacles = new Set();
+            for (let i = 1; i < simSnake.length - 1; i++) {
+                simObstacles.add(`${simSnake[i].x},${simSnake[i].y}`);
+            }
+            const pathToTail = findPath(simHead, simTail, simObstacles);
+            return pathToTail !== null;
+        }
+        // 选择可达空间最大的安全方向
+        function chooseBestDirection(head, snakeObstacles) {
+            const dirs = [
+                { x: 0, y: -1 }, { x: 0, y: 1 },
+                { x: -1, y: 0 }, { x: 1, y: 0 }
+            ];
+            let bestDir = null;
+            let bestSpace = -1;
+            for (let dir of dirs) {
+                if (dir.x === -direction.x && dir.y === -direction.y) continue;
+                const nx = wrapX(head.x + dir.x);
+                const ny = wrapY(head.y + dir.y);
+                const key = `${nx},${ny}`;
+                if (snakeObstacles.has(key) || isInClockArea(nx, ny)) continue;
+                const space = floodFillCount(nx, ny, snakeObstacles);
+                if (space > bestSpace) {
+                    bestSpace = space;
+                    bestDir = { x: dir.x, y: dir.y };
                 }
+            }
+            if (bestDir) {
+                nextDirection = bestDir;
             }
         }
-        // ========== 核心修改：更新游戏逻辑 ==========
+        // 从当前蛇头设置走向目标的方向
+        function setDirectionToward(head, target) {
+            let dx = target.x - head.x;
+            let dy = target.y - head.y;
+            // 穿墙方向修正：选择更短的路径
+            if (dx > gridCols / 2) dx -= gridCols;
+            if (dx < -gridCols / 2) dx += gridCols;
+            if (dy > gridRows / 2) dy -= gridRows;
+            if (dy < -gridRows / 2) dy += gridRows;
+            // 确定主方向（取绝对值较大的分量）
+            let ndx = 0, ndy = 0;
+            if (Math.abs(dx) >= Math.abs(dy)) {
+                ndx = dx > 0 ? 1 : -1;
+            } else {
+                ndy = dy > 0 ? 1 : -1;
+            }
+            // 不允许反向
+            if (ndx !== 0 && direction.x === -ndx) {
+                ndx = 0;
+                ndy = dy > 0 ? 1 : (dy < 0 ? -1 : 0);
+                if (ndy !== 0 && direction.y === -ndy) return false;
+            }
+            if (ndy !== 0 && direction.y === -ndy) {
+                ndy = 0;
+                ndx = dx > 0 ? 1 : (dx < 0 ? -1 : 0);
+                if (ndx !== 0 && direction.x === -ndx) return false;
+            }
+            if (ndx === 0 && ndy === 0) return false;
+            nextDirection = { x: ndx, y: ndy };
+            return true;
+        }
+        // ===== 主 AI 决策函数 =====
+        function updateAutoMode() {
+            if (isManualMode) return;
+            if (!food) return;
+            const head = snake[0];
+            const obstacles = getSnakeObstacles({ excludeHead: true, excludeTail: true });
+            // 策略 1：安全地到达食物
+            const pathToFood = findPath(head, food, obstacles);
+            if (pathToFood && pathToFood.length > 1) {
+                if (isPathSafe(pathToFood)) {
+                    setDirectionToward(head, pathToFood[1]);
+                    return;
+                }
+            }
+            // 策略 2：追赶尾巴
+            const tail = snake[snake.length - 1];
+            const pathToTail = findPath(head, tail, obstacles);
+            if (pathToTail && pathToTail.length > 1) {
+                setDirectionToward(head, pathToTail[1]);
+                return;
+            }
+            // 策略 3：选择可达空间最大的方向
+            const fullObstacles = getSnakeObstacles({ excludeHead: false, excludeTail: true });
+            chooseBestDirection(head, fullObstacles);
+        }
+        // ===== 更新游戏逻辑（全屏穿墙 + 时钟碰撞） =====
         function updateGame(currentTime) {
             if (!gameRunning) return;
             if (currentTime - lastMoveTime < CONFIG.SNAKE_SPEED) return;
             lastMoveTime = currentTime;
-            updateAutoMode();
+            if (!isManualMode) updateAutoMode();
             direction = { ...nextDirection };
             const head = snake[0];
-            const newHead = { x: head.x + direction.x, y: head.y + direction.y };
-            // 边界穿墙
-            if (newHead.x < 0) newHead.x = gridCols - 1;
-            if (newHead.x >= gridCols) newHead.x = 0;
-            if (newHead.y < Math.floor(playAreaTop / CONFIG.GRID_SIZE)) {
-                newHead.y = Math.floor((playAreaBottom - CONFIG.GRID_SIZE) / CONFIG.GRID_SIZE);
+            const newHead = {
+                x: wrapX(head.x + direction.x),
+                y: wrapY(head.y + direction.y)
+            };
+            // 碰到时钟区域 → 死亡
+            if (isInClockArea(newHead.x, newHead.y)) {
+                triggerClockShake();
+                addCollisionEffect(
+                    head.x * CONFIG.GRID_SIZE + CONFIG.GRID_SIZE / 2,
+                    head.y * CONFIG.GRID_SIZE + CONFIG.GRID_SIZE / 2,
+                    '#ff4444'
+                );
+                resetGame();
+                return;
             }
-            if (newHead.y >= Math.floor(playAreaBottom / CONFIG.GRID_SIZE)) {
-                newHead.y = Math.floor(playAreaTop / CONFIG.GRID_SIZE);
-            }
-            // 自身碰撞检测
+            // 碰到自身 → 死亡
             for (let i = 0; i < snake.length; i++) {
                 if (snake[i].x === newHead.x && snake[i].y === newHead.y) {
                     triggerClockShake();
-                    addCollisionEffect(newHead.x * CONFIG.GRID_SIZE + CONFIG.GRID_SIZE/2, newHead.y * CONFIG.GRID_SIZE + CONFIG.GRID_SIZE/2, '#ff4444');
+                    addCollisionEffect(
+                        newHead.x * CONFIG.GRID_SIZE + CONFIG.GRID_SIZE / 2,
+                        newHead.y * CONFIG.GRID_SIZE + CONFIG.GRID_SIZE / 2,
+                        '#ff4444'
+                    );
                     resetGame();
                     return;
                 }
@@ -469,49 +682,45 @@
             if (ateFood) {
                 const eatenColor = food.color;
                 snakeColors.unshift(eatenColor);
-                addCollisionEffect(food.x * CONFIG.GRID_SIZE + CONFIG.GRID_SIZE/2, food.y * CONFIG.GRID_SIZE + CONFIG.GRID_SIZE/2, eatenColor);
+                addCollisionEffect(
+                    food.x * CONFIG.GRID_SIZE + CONFIG.GRID_SIZE / 2,
+                    food.y * CONFIG.GRID_SIZE + CONFIG.GRID_SIZE / 2,
+                    eatenColor
+                );
                 triggerClockShake();
                 generateFood();
             } else {
                 snakeColors.unshift(CONFIG.SNAKE_HEAD_COLOR);
-                // ========== 关键修改：检测尾巴移除的食物颜色，永久保存 ==========
                 const removedColor = snakeColors[snakeColors.length - 1];
                 if (isFoodColor(removedColor)) {
-                    // 食物颜色传到了尾巴末端即将被移除 → 永久记录
                     permanentTailColors.push(removedColor);
                 }
                 snake.pop();
                 snakeColors.pop();
             }
         }
-        // ========== 核心修改：绘制蛇（尾巴使用永久固定颜色） ==========
+        // ===== 绘制蛇 =====
         function drawSnake() {
             for (let i = 0; i < snake.length; i++) {
                 const segment = snake[i];
                 const x = segment.x * CONFIG.GRID_SIZE;
                 const y = segment.y * CONFIG.GRID_SIZE;
                 let color;
-                let isFixed = false; // 标记是否为永久固定颜色节
+                let isFixed = false;
                 if (i === 0) {
-                    // 蛇头 - 始终绿色
                     color = CONFIG.SNAKE_HEAD_COLOR;
                     ctx.fillStyle = color;
                     ctx.shadowBlur = 10;
                     ctx.shadowColor = color;
                 } else {
-                    // 计算当前节距离尾巴的距离
                     const fromTail = snake.length - 1 - i;
                     if (fromTail < permanentTailColors.length) {
-                        // 尾巴区域：使用永久固定颜色
-                        // permanentTailColors 末尾 = 最新的固定颜色 = 尾巴最末端
                         color = permanentTailColors[permanentTailColors.length - 1 - fromTail];
                         isFixed = true;
                     } else {
-                        // 非尾巴区域：使用 snakeColors（可能包含传递中的食物颜色）
                         color = snakeColors[i];
                     }
                     ctx.fillStyle = color;
-                    // 固定颜色节添加微弱发光
                     if (isFixed) {
                         ctx.shadowBlur = 6;
                         ctx.shadowColor = color;
@@ -520,20 +729,16 @@
                     }
                 }
                 ctx.fillRect(x + 1, y + 1, CONFIG.GRID_SIZE - 2, CONFIG.GRID_SIZE - 2);
-                // 食物颜色节添加边框
                 if (i > 0 && isFoodColor(color)) {
                     if (isFixed) {
-                        // 永久固定颜色节：边框
-                        ctx.strokeStyle = '#FFFFFF80';
-                        ctx.lineWidth = 0;
+                        ctx.strokeStyle = '#FFD700';
+                        ctx.lineWidth = 0.1;
                     } else {
-                        // 传递中的食物颜色节：白色边框
                         ctx.strokeStyle = '#FFFFFF';
                         ctx.lineWidth = 2;
                     }
                     ctx.strokeRect(x + 1, y + 1, CONFIG.GRID_SIZE - 2, CONFIG.GRID_SIZE - 2);
                 }
-                // 蛇眼
                 if (i === 0) {
                     ctx.shadowBlur = 0;
                     ctx.fillStyle = '#ffffff';
@@ -556,6 +761,7 @@
             }
             ctx.shadowBlur = 0;
         }
+        // ===== 绘制食物 =====
         function drawFood() {
             if (!food) return;
             const x = food.x * CONFIG.GRID_SIZE;
@@ -572,15 +778,67 @@
             ctx.globalAlpha = 1;
             ctx.shadowBlur = 0;
         }
+        // ===== 绘制时钟区域障碍边界（淡淡的虚线框提示玩家） =====
+        function drawClockBoundary() {
+            if (!clockGridBounds) return;
+            const b = clockGridBounds;
+            const x = b.minX * CONFIG.GRID_SIZE;
+            const y = b.minY * CONFIG.GRID_SIZE;
+            const w = (b.maxX - b.minX + 1) * CONFIG.GRID_SIZE;
+            const h = (b.maxY - b.minY + 1) * CONFIG.GRID_SIZE;
+            ctx.save();
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.06)';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([4, 8]);
+            ctx.strokeRect(x, y, w, h);
+            ctx.setLineDash([]);
+            ctx.restore();
+        }
+        // ===== HUD =====
+        function drawHUD() {
+            ctx.save();
+            const score = permanentTailColors.length;
+            ctx.font = 'bold 14px Arial';
+            ctx.fillStyle = '#d0d0d0';
+            ctx.globalAlpha = 0.75;
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'top';
+            ctx.fillText('SCORE ' + score, 12, 10);
+            const isAuto = !isManualMode;
+            const modeText = isAuto ? 'AUTO' : 'MANUAL';
+            const modeColor = isAuto ? '#4CAF50' : '#45B7D1';
+            ctx.font = 'bold 13px Arial';
+            ctx.textAlign = 'right';
+            ctx.fillStyle = modeColor;
+            ctx.globalAlpha = 0.85;
+            const modeWidth = ctx.measureText(modeText).width;
+            ctx.fillText(modeText, canvasWidth - 12, 10);
+            ctx.globalAlpha = 0.6;
+            ctx.fillStyle = modeColor;
+            const dotX = canvasWidth - 12 - modeWidth - 8;
+            ctx.beginPath();
+            ctx.arc(dotX, 17, 3, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.font = '11px Arial';
+            ctx.fillStyle = '#707070';
+            ctx.globalAlpha = 0.5;
+            ctx.textAlign = 'center';
+            ctx.fillText('SPACE 切换模式', canvasWidth / 2, 10);
+            ctx.restore();
+        }
+        // ===== 主绘制函数 =====
         function draw() {
             ctx.fillStyle = '#000000';
             ctx.fillRect(0, 0, canvasWidth, canvasHeight);
             drawStars();
+            drawClockBoundary();
             drawFood();
             drawSnake();
             drawCollisionParticles();
             drawRainbowTrail();
             drawPixelCat(currentMouseX, currentMouseY);
+            drawHUD();
+            drawModeNotification();
         }
         function resizeAndReset() {
             canvasWidth = window.innerWidth;
@@ -605,7 +863,12 @@
         function init() {
             resizeAndReset();
             gameRunning = true;
-            gameLoop(0);
+            // 延迟一帧确保时钟DOM渲染完毕后再计算区域
+            requestAnimationFrame(() => {
+                updateClockGridBounds();
+                resetGame();
+                gameLoop(0);
+            });
         }
         init();
     })();
