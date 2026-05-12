@@ -140,13 +140,22 @@
             box-shadow: 0 6px 25px rgba(79, 172, 254, 0.6);
         }
 
+        .game-button.snake {
+            background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%);
+            box-shadow: 0 4px 15px rgba(67, 233, 123, 0.4);
+        }
+
+        .game-button.snake:hover {
+            box-shadow: 0 6px 25px rgba(67, 233, 123, 0.6);
+        }
+
         @media (max-width: 768px) {
             .game-menu {
                 flex-direction: column;
                 gap: 15px;
                 bottom: 40px;
             }
-            
+
             .game-button {
                 padding: 15px 35px;
                 font-size: 18px;
@@ -163,8 +172,9 @@
 
 <!-- 游戏入口菜单 -->
 <div class="game-menu">
-    <a href="clock-打砖块.html" class="game-button breakout">🧱 打砖块</a>
-    <a href="clock-飞机大战.html" class="game-button shooter">✈️ 飞机大战</a>
+    <a href="clock-打砖块.html" class="game-button breakout">🧱打砖块</a>
+    <a href="clock-飞机大战.html" class="game-button shooter">✈️飞机大战</a>
+    <a href="clock-贪吃蛇.html" class="game-button snake">🐍贪吃蛇</a>
 </div>
 
 <script>
@@ -182,10 +192,10 @@
         let animationId = null;
         let canvasWidth = window.innerWidth;
         let canvasHeight = window.innerHeight;
-        
+
         // ---------- 星空粒子系统 ----------
         let stars = [];
-        
+
         class Star {
             constructor() {
                 this.x = Math.random() * canvasWidth;
@@ -223,25 +233,25 @@
                 ctx.restore();
             }
         }
-        
+
         function initStars() {
             stars = [];
             for (let i = 0; i < CONFIG.STAR_COUNT; i++) stars.push(new Star());
         }
-        
+
         function updateStars() {
             for (let s of stars) s.update();
         }
-        
+
         function drawStars() {
             for (let s of stars) s.draw(ctx);
         }
-        
+
         // ---------- 彩虹像素拖尾 ----------
         let mouseTrail = [];
         let currentMouseX = canvasWidth/2;
         let currentMouseY = canvasHeight/2;
-        
+
         canvas.addEventListener('mousemove', (e) => {
             const rect = canvas.getBoundingClientRect();
             const scaleX = canvas.width / rect.width;
@@ -255,7 +265,7 @@
             mouseTrail.unshift({ x: mouseX, y: mouseY, age: 0 });
             if (mouseTrail.length > CONFIG.TRAIL_LENGTH) mouseTrail.pop();
         });
-        
+
         canvas.addEventListener('touchmove', (e) => {
             e.preventDefault();
             const rect = canvas.getBoundingClientRect();
@@ -272,12 +282,12 @@
             if (mouseTrail.length > CONFIG.TRAIL_LENGTH) mouseTrail.pop();
         });
         canvas.addEventListener('touchstart', (e) => e.preventDefault());
-        
+
         function updateTrailAges() {
             for (let i = 0; i < mouseTrail.length; i++) mouseTrail[i].age += 0.2;
             mouseTrail = mouseTrail.filter(t => t.age < 2.5);
         }
-        
+
         function drawRainbowTrail() {
             if (mouseTrail.length === 0) return;
             for (let i = 0; i < mouseTrail.length; i++) {
@@ -293,7 +303,7 @@
             }
             ctx.shadowBlur = 0;
         }
-        
+
         // ---------- 绘图 ----------
         function draw() {
             ctx.fillStyle = '#000000';
@@ -301,7 +311,7 @@
             drawStars();
             drawRainbowTrail();
         }
-        
+
         // 自适应重置
         function resizeAndReset() {
             canvasWidth = window.innerWidth;
@@ -311,11 +321,11 @@
             initStars();
             mouseTrail = [];
         }
-        
+
         window.addEventListener('resize', () => {
             resizeAndReset();
         });
-        
+
         function gameLoop() {
             if (!canvas.isConnected) return;
             updateStars();
@@ -323,15 +333,15 @@
             draw();
             animationId = requestAnimationFrame(gameLoop);
         }
-        
+
         function init() {
             resizeAndReset();
             gameLoop();
         }
-        
+
         init();
     })();
-    
+
     // 独立时钟模块
     function updateClock() {
         const now = new Date();
